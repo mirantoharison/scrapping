@@ -1,14 +1,30 @@
 {
-  "name": "srapp",
+  "name": "scrapping-api",
   "version": "1.0.0",
-  "description": "",
-  "main": "test.js",
+  "description": "a scrapping api made with puppeteer",
+  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index | pino-pretty"
   },
+  "keywords": [
+    "scrapping",
+    "puppeteer",
+    "headless"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "puppeteer": "^22.14.0"
+    "better-queue": "^3.8.12",
+    "better-queue-sql": "^1.0.6",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "humanize-duration": "^3.32.1",
+    "pino": "^9.3.2",
+    "pino-http": "^10.2.0",
+    "pino-pretty": "^11.2.2",
+    "puppeteer": "^22.15.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7"
   }
 }
