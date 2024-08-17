@@ -1,44 +1,22 @@
 const path = require("path");
-const queue = require("better-queue");
-const transformDuration = require("humanize-duration");
 
 let logger;
 let browser;
-let jobs = new queue(async (input, cb) => {
-    const result = await input();
 
-    cb(null, result);
-}, {
-    maxRetries: 3,
-    retryDelay: 60000,
-    batchDelay: 5000,
-    afterProcessDelay: 5000,
-    store: {
-        type: "sql",
-        dialect: "sqlite",
-        path: path.join(__dirname, "logger.db")
-    }
-});
-jobs.on("task_accepted", (taskId) => logger.info(`Job [${taskId}] added to the queue`));
-jobs.on("task_started", (taskId) => logger.info(`Job [${taskId}] starting to be processed`));
-jobs.on("task_finish", (taskId, result, stats) => logger.info(`Job [${taskId}] process finished in [${transformDuration(stats.elapsed)}]. Results : ${JSON.stringify(result)}`));
-jobs.on("task_failed", (taskId, error) => logger.error(`Job terminated with some errors. ${error}`));
-jobs.on("empty", () => {});
-jobs.on("drain", () => {});
+async function delegateScrapping(url) {
+    // following is an object in which we will group all data of the page
+    let pageDataObject = {};
 
-async function delegateScrappping(url) {
-    if (!browser) {
-        console.error("Browser already closed");
-        logger.error("Browser already closed");
-        throw new Error("Browser already closed");
-    }
+    console.time("process-time");
+    try {
+        if (!browser) {
+            console.error("Browser already closed");
+            logger.error("Browser already closed");
+            throw new Error("Browser already closed");
+        }
 
-    if (url) {
-        try {
+        if (url) {
             logger.info("Starting to scrapp url : " + url);
-
-            // following is an object in which we will group all data of the page
-            let pageDataObject;
 
             const page = await browser.newPage();
             page.setDefaultTimeout(120000);
@@ -53,36 +31,38 @@ async function delegateScrappping(url) {
             pageDataObject = await buildBasicDataForPage(page, mainContainer);
 
             logger.info(`Starting to load all ${pageDataObject.reviewCount} reviews`);
-            await clickOnReviewButtonAndLoadAllReviews(page, mainContainer);
+            pageDataObject["reviews"] = await clickOnReviewButtonAndLoadAllReviews(page, mainContainer);
 
-            logger.info("Preparing all review fields");
-            pageDataObject["reviews"] = await buildDataObjectForReviews(page);
+            /*logger.info("Preparing all review fields");
+            pageDataObject["reviews"] = await buildDataObjectForReviews(page);*/
 
             logger.info("Scrapping finished.");
             await page.close();
-
-            return pageDataObject;
         }
-        catch (err) {
-            logger.error("Error while trying to scrapp : " + url);
-            console.error(err);
-            throw new Error("Error while trying to scrapp : " + url);
+        else {
+            logger.warn("Nothing to scrapp");
+            throw new Error("Nothing to scrapp");
         }
     }
-    else {
-        logger.warn("Nothing to scrapp");
-        throw new Error("Nothing to scrapp");
+    catch (err) {
+        logger.error("Error while trying to scrapp : " + url);
+        console.error(err);
+        throw new Error("Error while trying to scrapp : " + url);
     }
-}
-async function pushNewJob(url) {
-    jobs.push(async () => { return await delegateScrappping(url) });
-    return;
+    finally {
+        console.timeEnd("process-time");
+        return pageDataObject;
+    }
 }
 async function setBrowserContext(ctx) { browser = ctx; return; }
 async function removeBrowserContext() { browser = null; return; }
 async function setLoggerContext(loggerCtx) { logger = loggerCtx; return; }
 
 async function clickOnReviewButtonAndLoadAllReviews(page, mainContainer) {
+    let reviewBlock;
+    let reviewBlockCount;
+    let reviewBlockIndex = 0;
+    let reviewArrayObject = [];
     try {
         // then we simulate the click action on review button before gathering all the reviews
         await page.click("[aria-label^=Reviews");
@@ -97,9 +77,21 @@ async function clickOnReviewButtonAndLoadAllReviews(page, mainContainer) {
             do {
                 await reviewLoading.scrollIntoView();
                 await page.waitForNetworkIdle();
+
+                reviewBlock = await page.$$("[role=main] div[data-review-id][jslog][aria-label]:not([role=presentation])");
+                reviewBlockCount = reviewBlock.length;
+
+                if (reviewBlockIndex < reviewBlockCount) {
+                    logger.info(`[Scrapping] Loading reviews from ${reviewBlockIndex} to ${reviewBlockCount}`);
+                    for (let i = reviewBlockIndex; i < reviewBlockCount; i++) {
+                        const data = await buildDataObjectForReviews(page, [reviewBlock[i]]);
+                        reviewArrayObject = reviewArrayObject.concat(data);
+                    }
+                    reviewBlockIndex = reviewBlockCount;
+                }
             } while (await reviewLoading.evaluate(el => el.innerHTML));
         }
-        return;
+        return reviewArrayObject;
     }
     catch (err) {
         throw err;
@@ -160,14 +152,12 @@ async function buildBasicDataForPage(page, mainContainer) {
         throw err;
     }
 }
-async function buildDataObjectForReviews(page) {
+async function buildDataObjectForReviews(page, reviewArray) {
     try {
-        const reviewArray = await page.$$("div[data-review-id][jslog][aria-label]:not([role=presentation])");
         const reviewArrayOfObject = [];
 
         // when we finished loading all comments we need to get every data there
         if (reviewArray.length > 0) {
-            logger.info("Scrapping all available data for the reviews");
             for (const review of reviewArray) {
                 const reviewId = await review.evaluate(el => el.getAttribute("data-review-id"));
 
@@ -177,23 +167,23 @@ async function buildDataObjectForReviews(page) {
                 const userReviewCount = await userLink.$("& > div:first-child + div");
                 const userReviewContainer = await review.$("& > div > div > :last-child");
                 const userRating = await userReviewContainer.$("& > :first-child > :first-child, [role=img][aria-label$=star], [role=img][aria-label$=stars]");
-                const userReviewDate = await userRating.evaluateHandle(el => el.nextElementSibling);
+                const userReviewDate = await userReviewContainer.$("div::-p-text(ago)");
                 const userVisitedDate = await userReviewContainer.$("div::-p-text(Visited)");
                 const userReviewText = await userReviewContainer.$("div[id]");
+                const userReviewMoreText = await userReviewContainer.$("[aria-label='See more']");
 
                 // waiting for whole review text to load
-                if (await page.$(`div#${reviewId} button[aria-controls][aria-label='See more']`)) {
-                    await page.click(`div#${reviewId} button[aria-controls][aria-label='See more']`);
+                if (userReviewMoreText) {
+                    await userReviewMoreText.click();
                     await page.waitForNetworkIdle();
                 }
-
                 // pushing all data as object into an array
                 reviewArrayOfObject.push({
                     name: await userName.evaluate(el => el.textContent),
                     link: await userLink.evaluate(el => el.getAttribute("data-href")),
                     rating: (await userRating.evaluate(el => el.getAttribute("aria-label") || el.textContent)).replace(/[^0-9/]/g, ""),
                     reviewDate: await userReviewDate.evaluate(el => el.textContent),
-                    reviewCount: userReviewCount ? await userReviewCount.evaluate(el => el.textContent.split(" ").shift()) : null,
+                    reviewCount: userReviewCount ? await userReviewCount.evaluate(el => el.textContent.replace(/[^0-9\s]/g, "").trim().split(" ").shift()) : null,
                     visitDate: userVisitedDate ? await userVisitedDate.evaluate(el => el.textContent) : null,
                     text: userReviewText ? await userReviewText.evaluate(el => el.textContent.replace(/\n/g, " ")) : null,
                 });
@@ -207,8 +197,8 @@ async function buildDataObjectForReviews(page) {
 }
 
 module.exports = {
+    delegateScrapping,
     setBrowserContext,
     setLoggerContext,
     removeBrowserContext,
-    pushNewJob,
 };

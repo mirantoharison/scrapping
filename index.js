@@ -6,6 +6,7 @@ const pinoHttp = require("pino-http");
 const path = require("path");
 
 const scrapping = require("./scrapping");
+const queue = require("./queue");
 const app = express();
 
 let browser;
@@ -20,11 +21,20 @@ let logger = pino({
     },
 });
 let appLogger = pinoHttp({ ...logger });
+let appQueue = queue.Queue({
+    maxRetries: 3,
+    retryDelay: 60000,
+    batchDelay: 5000,
+    afterProcessDelay: 5000,
+});
 
 //app.use(appLogger);
 app.use(helmet());
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+scrapping.setLoggerContext(logger);
+queue.setLoggerContext(logger);
 
 app.get("/start", async (req, res) => {
     try {
@@ -37,7 +47,6 @@ app.get("/start", async (req, res) => {
             timeout: 120000,
         });
         await scrapping.setBrowserContext(browser);
-        await scrapping.setLoggerContext(logger);
         logger.info("Browser started");
         res.send("Browser started");
     }
@@ -50,7 +59,7 @@ app.get("/start/scrapp", async (req, res) => {
     const query = { ...req.query };
     const url = query.url;
     if (url) {
-        await scrapping.pushNewJob(url);
+        await appQueue.push(url);
         res.send("Scrapping : " + url);
     }
     else {
