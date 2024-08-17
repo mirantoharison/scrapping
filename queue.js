@@ -62,9 +62,7 @@ const getTaskFromStore = async (taskId, cb) => {
 const putTaskInStore = async (taskId, task, priority, cb) => {
     let serializedTask;
     try {
-        console.log(task);
         serializedTask = JSON.stringify(task);
-        console.log({ id: taskId, task: serializedTask, priority: priority || 1, lock: "" })
         await queueDatastore.insert({ id: taskId, task: serializedTask, priority: priority || 1, lock: "" });
         cb();
         return task;
